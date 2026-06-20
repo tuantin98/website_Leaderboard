@@ -11,6 +11,15 @@ const generateToken = (user) => jwt.sign(
   { expiresIn: '7d' }
 );
 
+const sanitizeUser = (user) => ({
+  id: user._id,
+  username: user.username,
+  role: user.role,
+  totalScore: user.totalScore,
+  spinCount: user.spinCount,
+  canSpin: user.canSpin,
+});
+
 router.post('/register', async (req, res, next) => {
   try {
     const { username, password, role = 'student' } = req.body;
@@ -37,13 +46,7 @@ router.post('/register', async (req, res, next) => {
     return res.status(201).json({
       success: true,
       token,
-      user: {
-        id: user._id,
-        username: user.username,
-        role: user.role,
-        totalScore: user.totalScore,
-        canSpin: user.canSpin,
-      },
+      user: sanitizeUser(user),
     });
   } catch (error) {
     next(error);
@@ -73,13 +76,7 @@ router.post('/login', async (req, res, next) => {
     return res.status(200).json({
       success: true,
       token,
-      user: {
-        id: user._id,
-        username: user.username,
-        role: user.role,
-        totalScore: user.totalScore,
-        canSpin: user.canSpin,
-      },
+      user: sanitizeUser(user),
     });
   } catch (error) {
     next(error);
