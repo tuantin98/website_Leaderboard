@@ -19,6 +19,12 @@ const userSchema = new mongoose.Schema({
   totalScore: {
     type: Number,
     default: 0,
+    min: 0,
+  },
+  spinCount: {
+    type: Number,
+    default: 0,
+    min: 0,
   },
   canSpin: {
     type: Boolean,
