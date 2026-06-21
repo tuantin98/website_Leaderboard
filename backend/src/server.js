@@ -6,6 +6,7 @@ const dotenv = require('dotenv');
 const cookieParser = require('cookie-parser');
 
 const connectDB = require('./config/db');
+const { corsOptions } = require('./config/cors');
 const authRoutes = require('./routes/auth.routes');
 const adminRoutes = require('./routes/admin.routes');
 const studentRoutes = require('./routes/student.routes');
@@ -17,10 +18,9 @@ const app = express();
 const server = http.createServer(app);
 const io = initSocket(server);
 
-app.use(cors({
-  origin: process.env.CLIENT_URL || '*',
-  credentials: true,
-}));
+// Allow localhost + any private LAN origin so devices on the same Wi-Fi
+// (http://<laptop-ip>:3000) can call the API. See config/cors.js.
+app.use(cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
@@ -43,11 +43,14 @@ app.use((err, _req, res, _next) => {
 });
 
 const PORT = process.env.PORT || 5000;
+// Bind to 0.0.0.0 so the server is reachable from other devices on the LAN
+// (phones, tablets) via the laptop's IPv4 address — not just localhost.
+const HOST = process.env.HOST || '0.0.0.0';
 
 connectDB()
   .then(() => {
-    server.listen(PORT, () => {
-      console.log(`Server running on port ${PORT}`);
+    server.listen(PORT, HOST, () => {
+      console.log(`Server running on http://${HOST}:${PORT} (reachable on your LAN IP)`);
     });
   })
   .catch((error) => {
