@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import { io } from 'socket.io-client';
@@ -15,13 +16,14 @@ const normalizeDegrees = (value) => ((value % 360) + 360) % 360;
 
 export default function StudentDashboard() {
   const { user, logout } = useAuth();
+  const navigate = useNavigate();
   const [leaderboard, setLeaderboard] = useState([]);
   const [session, setSession] = useState(null);
   const [stats, setStats] = useState({
     totalScore: user?.totalScore || 0,
-    spinCount: user?.spinCount || 0,
+    spinsRemaining: user?.spinsRemaining || 0,
+    spinsExecuted: user?.spinsExecuted || 0,
   });
-  const [permission, setPermission] = useState(Boolean(user?.canSpin));
   const [result, setResult] = useState(null);
   const [spinning, setSpinning] = useState(false);
   const [rotation, setRotation] = useState(0);
@@ -31,6 +33,12 @@ export default function StudentDashboard() {
   const rotationRef = useRef(0);
   const animationRef = useRef(null);
   const pendingLeaderboardRef = useRef(null);
+  const pendingStatsRef = useRef(null);
+  const socketRef = useRef(null);
+  // Mirror `spinning` into a ref so the socket effect can read the latest value
+  // without listing `spinning` in its deps (which would reconnect on every spin).
+  const spinningRef = useRef(false);
+  spinningRef.current = spinning;
 
   useEffect(() => {
     const fetchData = async () => {
@@ -44,9 +52,9 @@ export default function StudentDashboard() {
         const currentUser = meRes.data.user || {};
         setStats({
           totalScore: currentUser.totalScore || 0,
-          spinCount: currentUser.spinCount || 0,
+          spinsRemaining: currentUser.spinsRemaining || 0,
+          spinsExecuted: currentUser.spinsExecuted || 0,
         });
-        setPermission(Boolean(currentUser.canSpin));
         setLeaderboard(leaderboardRes.data.users || []);
         const currentSession = sessionRes.data.session;
         setSession(currentSession);
@@ -58,13 +66,21 @@ export default function StudentDashboard() {
 
     fetchData();
 
-    const socket = io(import.meta.env.VITE_SOCKET_URL || 'http://localhost:5000');
+    // Authenticate the socket via the JWT in the handshake — the server derives
+    // our identity and joins us to our private room. This is stable across tabs
+    // and page reloads (no reliance on a client-supplied user id).
+    const socket = io(import.meta.env.VITE_SOCKET_URL || 'http://localhost:5000', {
+      auth: { token: localStorage.getItem('token') },
+    });
+    socketRef.current = socket;
     socket.on('connect', () => {
+      // Belt-and-suspenders: re-assert the room (handshake auth already joined it).
       socket.emit('join', { userId: user?.id, role: user?.role });
     });
 
-    socket.on('leaderboard:update', (data) => {
-      if (spinning) {
+    socket.on('leaderboardUpdated', (data) => {
+      // Delay leaderboard refresh until our own wheel has stopped (read via ref).
+      if (spinningRef.current) {
         pendingLeaderboardRef.current = data;
       } else {
         setLeaderboard(data);
@@ -77,31 +93,49 @@ export default function StudentDashboard() {
     socket.on('wheel:update', (data) => {
       setWheelSegments(data?.length ? data : defaultWheelSegments);
     });
-    socket.on('user:permission', ({ userId, canSpin }) => {
-      if (userId === user?.id) {
-        setPermission(canSpin);
+
+    // Real-time quota sync: admin allocations and the student's own spins both
+    // push the updated balance here. While THIS tab's wheel is mid-spin we buffer
+    // the update so the visible score/quota only changes once the wheel stops.
+    socket.on('spinsUpdated', (data) => {
+      if (spinningRef.current) {
+        pendingStatsRef.current = data;
+        return;
       }
+      setStats((prev) => ({
+        totalScore: data.totalScore ?? prev.totalScore,
+        spinsRemaining: data.spinsRemaining ?? prev.spinsRemaining,
+        spinsExecuted: data.spinsExecuted ?? prev.spinsExecuted,
+      }));
     });
 
-    // Spec event: targeted ({ userId, canSpin }) or global ({ canSpin }).
-    socket.on('spinStatusUpdate', ({ userId, canSpin }) => {
-      if (!userId || userId === user?.id) {
-        setPermission(canSpin);
-      }
+    // Admin deleted this account: clear auth + state and bounce to login.
+    socket.on('forcedLogout', (data) => {
+      const message = data?.message || 'Your account has been removed by the Admin.';
+      logout();
+      navigate('/login', { replace: true, state: { message } });
     });
 
-    // Global Grant/Revoke All from the admin.
-    socket.on('users:permission:update', ({ canSpin }) => {
-      setPermission(canSpin);
-    });
-
-    return () => socket.disconnect();
-  }, [user, spinning]);
+    return () => {
+      socketRef.current = null;
+      socket.disconnect();
+    };
+  }, [user]);
 
   useEffect(() => {
-    if (!spinning && pendingLeaderboardRef.current) {
+    if (spinning) return;
+    if (pendingLeaderboardRef.current) {
       setLeaderboard(pendingLeaderboardRef.current);
       pendingLeaderboardRef.current = null;
+    }
+    if (pendingStatsRef.current) {
+      const data = pendingStatsRef.current;
+      pendingStatsRef.current = null;
+      setStats((prev) => ({
+        totalScore: data.totalScore ?? prev.totalScore,
+        spinsRemaining: data.spinsRemaining ?? prev.spinsRemaining,
+        spinsExecuted: data.spinsExecuted ?? prev.spinsExecuted,
+      }));
     }
   }, [spinning]);
 
@@ -152,11 +186,11 @@ export default function StudentDashboard() {
     ctx.fill();
   }, [rotation, wheelSegments]);
 
-  // Continuous spinning: the button re-enables instantly once the spin
-  // finishes and the result popup is closed — no cap on number of spins.
+  // Quota-gated: the SPIN button is enabled only while the student has spins
+  // left and the session is active (and no spin/popup is currently in flight).
   const canSpin = useMemo(() => {
-    return permission && session?.status === 'active' && !spinning && !showResultModal;
-  }, [permission, session, spinning, showResultModal]);
+    return stats.spinsRemaining > 0 && session?.status === 'active' && !spinning && !showResultModal;
+  }, [stats.spinsRemaining, session, spinning, showResultModal]);
 
   const animateSpin = (targetRotation, onComplete) => {
     const duration = 3200;
@@ -202,13 +236,18 @@ export default function StudentDashboard() {
       const deltaToTarget = (desiredFinalRotation - currentNormalized + 360) % 360;
       const targetDegrees = rotationRef.current + 360 * 5 + deltaToTarget;
 
+      // Delayed sync: only commit score/quota once the wheel has fully stopped.
       animateSpin(targetDegrees, () => {
         setResult(spinResult);
         setStats({
           totalScore: res.data.user.totalScore,
-          spinCount: res.data.user.spinCount,
+          spinsRemaining: res.data.user.spinsRemaining,
+          spinsExecuted: res.data.user.spinsExecuted,
         });
         setShowResultModal(true);
+        // Ack the server now that our animation has stopped — this is the signal
+        // that it is safe to reveal our new score on everyone else's leaderboard.
+        socketRef.current?.emit('spin:settled');
       });
     } catch (error) {
       setSpinning(false);
@@ -234,12 +273,15 @@ export default function StudentDashboard() {
                 <p className="text-sm text-slate-400">Current score</p>
                 <h2 className="text-4xl font-bold">{stats.totalScore}</h2>
               </div>
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-3">
                 <span className="rounded-full bg-cyan-500/10 px-3 py-1 text-sm text-cyan-300">
                   {session?.status || 'idle'}
                 </span>
+                <span className="rounded-full bg-emerald-500/10 px-3 py-1 text-sm font-semibold text-emerald-300">
+                  Spins Remaining: {stats.spinsRemaining}
+                </span>
                 <span className="rounded-full bg-slate-800 px-3 py-1 text-sm text-slate-300">
-                  Spins: {stats.spinCount}
+                  Spins Completed: {stats.spinsExecuted}
                 </span>
               </div>
             </div>
@@ -260,7 +302,11 @@ export default function StudentDashboard() {
                     : 'cursor-not-allowed bg-slate-700 text-slate-400'
                 }`}
               >
-                {spinning ? 'Spinning...' : 'SPIN'}
+                {spinning
+                  ? 'Spinning...'
+                  : stats.spinsRemaining > 0
+                    ? 'SPIN'
+                    : 'No spins left'}
               </button>
             </div>
           </section>
@@ -269,7 +315,7 @@ export default function StudentDashboard() {
             <div className="flex items-center justify-between">
               <h3 className="text-xl font-semibold">Leaderboard</h3>
               <span className="rounded-full bg-slate-800 px-3 py-1 text-sm text-slate-300">
-                {permission ? 'Ready to spin' : 'Locked'}
+                {canSpin ? 'Ready to spin' : 'Locked'}
               </span>
             </div>
             <div className="mt-4 space-y-3">

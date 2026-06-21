@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 
 export default function LoginPage() {
@@ -8,6 +8,9 @@ export default function LoginPage() {
   const [error, setError] = useState('');
   const { login } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+  // Message passed in by a redirect (e.g. forced logout after account deletion).
+  const notice = location.state?.message;
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -25,6 +28,11 @@ export default function LoginPage() {
       <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900 p-8 shadow-2xl">
         <h2 className="text-3xl font-semibold text-white">Login</h2>
         <p className="mt-2 text-slate-400">Welcome back</p>
+        {notice && (
+          <p className="mt-4 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
+            {notice}
+          </p>
+        )}
         <form className="mt-6 space-y-4" onSubmit={handleSubmit}>
           <input
             className="w-full rounded-lg bg-slate-950 px-4 py-3 text-white outline-none ring-1 ring-slate-700"

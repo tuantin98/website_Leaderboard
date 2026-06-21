@@ -1,6 +1,50 @@
 const { Server } = require('socket.io');
+const jwt = require('jsonwebtoken');
+const User = require('../models/User');
 
 let io;
+
+// Single source of truth for the sorted student leaderboard.
+const buildLeaderboard = () =>
+  User.find({ role: 'student' })
+    .sort({ totalScore: -1, spinsExecuted: -1, username: 1 })
+    .select('-password');
+
+// Broadcast the global leaderboard to every connected client.
+const broadcastLeaderboard = async () => {
+  if (!io) return null;
+  const leaderboard = await buildLeaderboard();
+  io.emit('leaderboardUpdated', leaderboard);
+  return leaderboard;
+};
+
+// Coalesce many near-simultaneous spins into a single delayed broadcast so the
+// global leaderboard is only revealed *after* a spinner's wheel has stopped.
+// A client ack ('spin:settled') can flush it sooner; this is the safety net.
+let pendingBroadcast = null;
+const scheduleLeaderboardBroadcast = (delayMs = 5000) => {
+  if (pendingBroadcast) return; // a broadcast is already queued — let it cover us
+  pendingBroadcast = setTimeout(() => {
+    pendingBroadcast = null;
+    broadcastLeaderboard().catch((error) => console.error('Leaderboard broadcast failed:', error));
+  }, delayMs);
+};
+
+// Emit to a single user's private room, keyed by their stable Mongo _id.
+// Works regardless of how many tabs/sockets that user has open.
+const emitToUser = (userId, event, payload) => {
+  if (!io) return;
+  io.to(String(userId)).emit(event, payload);
+};
+
+// Force every open tab of a user off the site: notify their room, then drop the
+// sockets so a deleted account can't keep a live connection.
+const forceLogoutUser = (userId) => {
+  if (!io) return;
+  const room = String(userId);
+  io.to(room).emit('forcedLogout', { message: 'Your account has been removed by the Admin.' });
+  io.in(room).disconnectSockets(true);
+};
 
 const initSocket = (server) => {
   io = new Server(server, {
@@ -11,22 +55,45 @@ const initSocket = (server) => {
     },
   });
 
+  // Authenticate the socket from the JWT passed in the handshake. We derive the
+  // user identity here so room membership never depends on unstable socket.id
+  // mappings or client-supplied ids (which broke across tabs / page reloads).
+  io.use((socket, next) => {
+    try {
+      const token = socket.handshake.auth?.token;
+      if (token) {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        socket.userId = decoded.id;
+        socket.role = decoded.role;
+      }
+    } catch (error) {
+      // Invalid token → fall through as an anonymous connection (read-only).
+    }
+    next();
+  });
+
   io.on('connection', (socket) => {
-    console.log('Socket connected:', socket.id);
+    // Join the private per-user room immediately on (authenticated) connect.
+    if (socket.userId) {
+      socket.join(String(socket.userId));
+    }
+    if (socket.role === 'admin') {
+      socket.join('admins');
+    }
 
-    socket.on('join', ({ userId, role }) => {
-      if (userId) {
-        socket.join(`user:${userId}`);
-      }
-
-      if (role === 'admin') {
-        socket.join('admins');
-      }
+    // Backward-compatible / explicit join (lets a client re-assert its rooms).
+    socket.on('join', ({ userId, role } = {}) => {
+      if (userId) socket.join(String(userId));
+      if (role === 'admin') socket.join('admins');
     });
 
-    socket.on('disconnect', () => {
-      console.log('Socket disconnected:', socket.id);
+    // Client acknowledgement: the spinner's wheel animation has fully stopped,
+    // so it is now safe to reveal the new score to everyone else.
+    socket.on('spin:settled', () => {
+      broadcastLeaderboard().catch((error) => console.error('Leaderboard broadcast failed:', error));
     });
+
+    socket.on('disconnect', () => {});
   });
 
   return io;
@@ -39,4 +106,11 @@ const getIO = () => {
   return io;
 };
 
-module.exports = { initSocket, getIO };
+module.exports = {
+  initSocket,
+  getIO,
+  broadcastLeaderboard,
+  scheduleLeaderboardBroadcast,
+  emitToUser,
+  forceLogoutUser,
+};

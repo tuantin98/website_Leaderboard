@@ -1,8 +1,8 @@
 # Real-Time Leaderboard Wheel App
 
 A real-time competition app where students spin a Lucky Wheel to earn points and
-climb a live leaderboard, while an admin controls the session and each student's
-permission to spin — all updated instantly over Socket.io.
+climb a live leaderboard, while an admin controls the session and allocates each
+student's **spin quota** — all updated instantly over Socket.io.
 
 **Stack:** React + Vite + Tailwind (frontend) · Node.js + Express (backend) ·
 MongoDB + Mongoose · Socket.io.
@@ -18,11 +18,11 @@ project_Web_LeaderBoard/
 │  │  ├─ middleware/
 │  │  │  └─ auth.js               # JWT authenticate + role authorization
 │  │  ├─ models/
-│  │  │  ├─ User.js               # username, role, totalScore, spinCount, canSpin
+│  │  │  ├─ User.js               # username, role, totalScore, spinsRemaining, spinsExecuted
 │  │  │  └─ Session.js            # status, wheelSegments, timestamps
 │  │  ├─ routes/
 │  │  │  ├─ auth.routes.js        # register / login
-│  │  │  ├─ admin.routes.js       # session, wheel-config, toggle-spin
+│  │  │  ├─ admin.routes.js       # session, wheel-config, users/spins (allocate)
 │  │  │  └─ student.routes.js     # me, leaderboard, session, spin
 │  │  ├─ sockets/
 │  │  │  └─ index.js              # Socket.io init + per-user room mapping
@@ -99,33 +99,46 @@ reachable, it automatically falls back to an in-memory MongoDB
 
 ## Features
 
-- **Continuous spinning** — students spin back-to-back with no hardcoded cap, as
-  long as the session is `active` and the admin has enabled their permission.
-- **Real-time permission control** — admin toggles per-student or global spin
-  permission; the student's SPIN button enables/disables instantly via Socket.io
-  (`spinStatusUpdate`, `user:permission`, `users:permission:update`).
-- **Admin-configurable wheel** — segments (label, value, color) are set from the
-  Admin Dashboard and persisted on the session.
-- **Delayed score sync** — scores, spin counters, and the leaderboard update only
-  after the wheel comes to a complete stop.
+- **Spin Quota Management** — each student has a `spinsRemaining` balance and a
+  `spinsExecuted` counter. The SPIN button is enabled only while
+  `spinsRemaining > 0` and the session is `active`; each spin atomically
+  decrements the balance on the backend and locks the button at zero.
+- **Admin spin allocation** — admin can **Add** to or **Set** any student's spin
+  balance individually, or **Bulk Add / Bulk Set** for all students at once.
+- **Real-time quota sync** — allocating spins emits `student:stats:update` to the
+  affected student, instantly updating their dashboard and unlocking the button
+  with no page refresh.
+- **Admin-configurable wheel** — segments (text, value, color) are added/edited/
+  deleted from the Admin Dashboard and pushed to students via `wheel:update`.
+- **Delayed score sync** — score, spin counts, and the leaderboard update only
+  after the wheel animation has fully stopped and the result popup appears.
 - **Live leaderboard** — broadcast to all clients on every score change.
+
+## Spin Allocation API
+
+`PUT /api/admin/users/spins`
+
+| Body field | Type   | Notes                                                        |
+| ---------- | ------ | ----------------------------------------------------------- |
+| `userId`   | string | Target student. **Omit** to apply to all students (bulk).   |
+| `amount`   | number | Non-negative spin count.                                    |
+| `mode`     | string | `'add'` increments the balance, `'set'` overwrites it.      |
 
 ## Socket.io Events
 
-| Event                     | Direction        | Purpose                                        |
-| ------------------------- | ---------------- | ---------------------------------------------- |
-| `join`                    | client → server  | Join a per-user room and/or the `admins` room  |
-| `leaderboard:update`      | server → clients | Updated, sorted student leaderboard            |
-| `session:update`          | server → clients | Session state changed                          |
-| `wheel:update`            | server → clients | Wheel segment configuration changed            |
-| `spinStatusUpdate`        | server → clients | Spin permission changed (targeted or global)   |
-| `user:permission`         | server → user    | Per-student spin permission toggle             |
-| `users:permission:update` | server → clients | Global grant/revoke all                        |
-| `student:stats:update`    | server → user    | A student's score/spin count after a spin      |
+| Event                  | Direction        | Purpose                                              |
+| ---------------------- | ---------------- | --------------------------------------------------- |
+| `join`                 | client → server  | Join a per-user room and/or the `admins` room       |
+| `leaderboard:update`   | server → clients | Updated, sorted student leaderboard                 |
+| `session:update`       | server → clients | Session state changed (gates the SPIN button)       |
+| `wheel:update`         | server → clients | Wheel segment configuration changed                 |
+| `student:stats:update` | server → user    | Student's score + `spinsRemaining`/`spinsExecuted`  |
 
 ## Notes
 
 - Admin routes are protected with JWT auth + role authorization middleware.
-- Score changes are validated server-side before broadcasting.
-- A successful spin only increments score/spin count; spin permission is
-  controlled solely by the admin (and the active session state).
+- Score changes and quota spends are validated server-side before broadcasting.
+- Spending a spin is atomic (`spinsRemaining > 0` guard in the update query), so a
+  rapid double-click can never spend more spins than the student has.
+- Pausing/ending a session disables spinning for everyone but **preserves** each
+  student's `spinsRemaining` balance for when the session resumes.

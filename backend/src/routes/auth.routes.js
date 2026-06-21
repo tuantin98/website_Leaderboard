@@ -16,8 +16,8 @@ const sanitizeUser = (user) => ({
   username: user.username,
   role: user.role,
   totalScore: user.totalScore,
-  spinCount: user.spinCount,
-  canSpin: user.canSpin,
+  spinsRemaining: user.spinsRemaining,
+  spinsExecuted: user.spinsExecuted,
 });
 
 router.post('/register', async (req, res, next) => {
