@@ -2,7 +2,7 @@ const express = require('express');
 const { authenticate } = require('../middleware/auth');
 const User = require('../models/User');
 const Session = require('../models/Session');
-const { getIO } = require('../sockets');
+const { emitToUser, scheduleLeaderboardBroadcast } = require('../sockets');
 
 const router = express.Router();
 
@@ -48,7 +48,7 @@ router.get('/me', async (req, res, next) => {
 router.get('/leaderboard', async (_req, res, next) => {
   try {
     const users = await User.find({ role: 'student' })
-      .sort({ totalScore: -1, spinCount: -1, username: 1 })
+      .sort({ totalScore: -1, spinsExecuted: -1, username: 1 })
       .select('-password');
 
     res.status(200).json({ success: true, users });
@@ -78,8 +78,8 @@ router.post('/spin', async (req, res, next) => {
       return res.status(400).json({ success: false, message: 'Session is not active' });
     }
 
-    if (!user.canSpin) {
-      return res.status(403).json({ success: false, message: 'You do not have permission to spin' });
+    if (user.spinsRemaining <= 0) {
+      return res.status(403).json({ success: false, message: 'No spins remaining' });
     }
 
     const wheelSegments = session.wheelSegments?.length
@@ -97,34 +97,36 @@ router.post('/spin', async (req, res, next) => {
       return res.status(400).json({ success: false, message: 'No wheel segments configured' });
     }
 
-    // Continuous spinning: permission is controlled solely by the admin.
-    // A successful spin only increments score/count; it never revokes canSpin.
-    const updatedUser = await User.findByIdAndUpdate(
-      user._id,
+    // Quota spend is atomic: the `spinsRemaining > 0` guard in the query prevents
+    // a double-click / concurrent request from spending more spins than allowed.
+    const updatedUser = await User.findOneAndUpdate(
+      { _id: user._id, spinsRemaining: { $gt: 0 } },
       {
         $inc: {
           totalScore: result.value,
-          spinCount: 1,
+          spinsRemaining: -1,
+          spinsExecuted: 1,
         },
       },
       { new: true }
     ).select('-password');
 
     if (!updatedUser) {
-      return res.status(404).json({ success: false, message: 'User not found after update' });
+      return res.status(403).json({ success: false, message: 'No spins remaining' });
     }
 
-    const io = getIO();
-    const leaderboard = await User.find({ role: 'student' })
-      .sort({ totalScore: -1, spinCount: -1, username: 1 })
-      .select('-password');
-
-    io.emit('leaderboard:update', leaderboard);
-    io.to(`user:${updatedUser._id}`).emit('student:stats:update', {
+    // 1. Privately sync the spinner's own quota (covers any of their other tabs).
+    //    The spinning tab also gets the result via this HTTP response below.
+    emitToUser(updatedUser._id, 'spinsUpdated', {
       totalScore: updatedUser.totalScore,
-      spinCount: updatedUser.spinCount,
-      canSpin: updatedUser.canSpin,
+      spinsRemaining: updatedUser.spinsRemaining,
+      spinsExecuted: updatedUser.spinsExecuted,
     });
+
+    // 2. DELAY the global leaderboard reveal until the wheel has stopped. The
+    //    spinner's client emits 'spin:settled' when its animation ends (flushing
+    //    immediately); this server-side timer is the fallback if that never lands.
+    scheduleLeaderboardBroadcast(5000);
 
     return res.status(200).json({
       success: true,

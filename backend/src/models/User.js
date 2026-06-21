@@ -21,14 +21,15 @@ const userSchema = new mongoose.Schema({
     default: 0,
     min: 0,
   },
-  spinCount: {
+  spinsRemaining: {
     type: Number,
     default: 0,
     min: 0,
   },
-  canSpin: {
-    type: Boolean,
-    default: false,
+  spinsExecuted: {
+    type: Number,
+    default: 0,
+    min: 0,
   },
 }, {
   timestamps: true,

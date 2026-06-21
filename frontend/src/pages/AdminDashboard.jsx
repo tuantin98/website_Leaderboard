@@ -25,6 +25,8 @@ export default function AdminDashboard() {
   const [users, setUsers] = useState([]);
   const [sessionName, setSessionName] = useState('');
   const [wheelSegments, setWheelSegments] = useState(() => withUids(defaultWheelSegments));
+  const [spinInputs, setSpinInputs] = useState({}); // per-user amount being typed
+  const [bulkAmount, setBulkAmount] = useState('');
 
   const fetchData = async () => {
     try {
@@ -44,14 +46,17 @@ export default function AdminDashboard() {
   useEffect(() => {
     fetchData();
 
-    const socket = io(import.meta.env.VITE_SOCKET_URL || 'http://localhost:5000');
+    const socket = io(import.meta.env.VITE_SOCKET_URL || 'http://localhost:5000', {
+      auth: { token: localStorage.getItem('token') },
+    });
     socket.on('connect', () => {
       socket.emit('join', { role: 'admin' });
     });
 
     socket.on('session:update', (data) => setSession(data));
     socket.on('wheel:update', (data) => setWheelSegments(withUids(data?.length ? data : defaultWheelSegments)));
-    socket.on('leaderboard:update', (data) => setUsers(data));
+    // Roster live-refresh (includes each student's spinsRemaining/spinsExecuted).
+    socket.on('leaderboardUpdated', (data) => setUsers(data));
 
     return () => socket.disconnect();
   }, []);
@@ -69,14 +74,46 @@ export default function AdminDashboard() {
     setSession(res.data.session);
   };
 
-  const toggleUserSpin = async (userId, value) => {
-    setUsers((prev) => prev.map((user) => (user._id === userId ? { ...user, canSpin: value } : user)));
-    await api.put('/admin/users/toggle-spin', { userId, canSpin: value });
+  // Allocate spins to one student. mode: 'add' (increment) or 'set' (overwrite).
+  const allocateSpins = async (userId, mode) => {
+    const amount = Number(spinInputs[userId]);
+    if (!Number.isFinite(amount) || amount < 0) return;
+    try {
+      const res = await api.put('/admin/users/spins', { userId, amount, mode });
+      const updated = res.data.user;
+      setUsers((prev) => prev.map((user) => (user._id === userId ? { ...user, ...updated } : user)));
+      setSpinInputs((prev) => ({ ...prev, [userId]: '' }));
+    } catch (error) {
+      console.error(error);
+    }
   };
 
-  const toggleAllUsers = async (value) => {
-    setUsers((prev) => prev.map((user) => ({ ...user, canSpin: value })));
-    await api.put('/admin/users/toggle-spin', { canSpin: value });
+  // Permanently delete a student (with confirmation). The backend force-logs-out
+  // any live sessions of that user via Socket.io.
+  const deleteUser = async (user) => {
+    const confirmed = window.confirm(
+      `Are you sure you want to delete ${user.username}? All their scores and spin history will be permanently lost.`
+    );
+    if (!confirmed) return;
+    try {
+      await api.delete(`/admin/users/${user._id}`);
+      setUsers((prev) => prev.filter((u) => u._id !== user._id));
+    } catch (error) {
+      console.error(error);
+    }
+  };
+
+  // Bulk allocate to every student.
+  const bulkAllocate = async (mode) => {
+    const amount = Number(bulkAmount);
+    if (!Number.isFinite(amount) || amount < 0) return;
+    try {
+      await api.put('/admin/users/spins', { amount, mode });
+      await fetchData();
+      setBulkAmount('');
+    } catch (error) {
+      console.error(error);
+    }
   };
 
   const updateSegment = (index, field, value) => {
@@ -186,11 +223,19 @@ export default function AdminDashboard() {
         </section>
 
         <section className="mt-6 rounded-3xl border border-slate-800 bg-slate-900 p-6">
-          <div className="mb-4 flex items-center justify-between">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
             <h2 className="text-2xl font-semibold">Student roster</h2>
-            <div className="flex gap-2">
-              <button onClick={() => toggleAllUsers(true)} className="rounded-2xl bg-cyan-500 px-4 py-2 font-semibold text-slate-950">Grant All</button>
-              <button onClick={() => toggleAllUsers(false)} className="rounded-2xl bg-slate-700 px-4 py-2 font-semibold text-white">Revoke All</button>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                min="0"
+                placeholder="Spins"
+                value={bulkAmount}
+                onChange={(e) => setBulkAmount(e.target.value)}
+                className="w-24 rounded-xl bg-slate-950 px-3 py-2 text-white outline-none ring-1 ring-slate-700"
+              />
+              <button onClick={() => bulkAllocate('add')} className="rounded-2xl bg-cyan-500 px-4 py-2 font-semibold text-slate-950">Bulk Add</button>
+              <button onClick={() => bulkAllocate('set')} className="rounded-2xl bg-slate-700 px-4 py-2 font-semibold text-white">Bulk Set</button>
             </div>
           </div>
 
@@ -200,8 +245,10 @@ export default function AdminDashboard() {
                 <tr>
                   <th className="px-4 py-3 text-left">Student</th>
                   <th className="px-4 py-3 text-left">Score</th>
-                  <th className="px-4 py-3 text-left">Spins</th>
-                  <th className="px-4 py-3 text-right">Allow Spin</th>
+                  <th className="px-4 py-3 text-left">Remaining</th>
+                  <th className="px-4 py-3 text-left">Completed</th>
+                  <th className="px-4 py-3 text-right">Allocate Spins</th>
+                  <th className="px-4 py-3 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -209,17 +256,34 @@ export default function AdminDashboard() {
                   <tr key={user._id} className="border-t border-slate-800 bg-slate-900/50">
                     <td className="px-4 py-3 font-medium">{user.username}</td>
                     <td className="px-4 py-3">{user.totalScore}</td>
-                    <td className="px-4 py-3">{user.spinCount || 0}</td>
-                    <td className="px-4 py-3 text-right">
-                      <label className="inline-flex cursor-pointer items-center gap-2">
-                        <span className={`text-xs ${user.canSpin ? 'text-emerald-300' : 'text-slate-400'}`}>{user.canSpin ? 'Enabled' : 'Disabled'}</span>
+                    <td className="px-4 py-3">
+                      <span className={`font-semibold ${user.spinsRemaining > 0 ? 'text-emerald-300' : 'text-slate-400'}`}>
+                        {user.spinsRemaining || 0}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3">{user.spinsExecuted || 0}</td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center justify-end gap-2">
                         <input
-                          type="checkbox"
-                          checked={!!user.canSpin}
-                          onChange={(e) => toggleUserSpin(user._id, e.target.checked)}
-                          className="h-4 w-4 accent-cyan-500"
+                          type="number"
+                          min="0"
+                          placeholder="0"
+                          value={spinInputs[user._id] ?? ''}
+                          onChange={(e) => setSpinInputs((prev) => ({ ...prev, [user._id]: e.target.value }))}
+                          className="w-20 rounded-lg bg-slate-950 px-2 py-1 text-white outline-none ring-1 ring-slate-700"
                         />
-                      </label>
+                        <button onClick={() => allocateSpins(user._id, 'add')} className="rounded-lg bg-cyan-500 px-3 py-1 font-semibold text-slate-950">Add</button>
+                        <button onClick={() => allocateSpins(user._id, 'set')} className="rounded-lg bg-slate-700 px-3 py-1 font-semibold text-white">Set</button>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <button
+                        onClick={() => deleteUser(user)}
+                        title="Delete user"
+                        className="inline-flex items-center gap-1 rounded-lg bg-rose-600 px-3 py-1 font-semibold text-white hover:bg-rose-500"
+                      >
+                        🗑 Delete
+                      </button>
                     </td>
                   </tr>
                 ))}

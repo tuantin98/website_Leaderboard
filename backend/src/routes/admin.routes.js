@@ -2,22 +2,12 @@ const express = require('express');
 const { authenticate, authorizeRole } = require('../middleware/auth');
 const Session = require('../models/Session');
 const User = require('../models/User');
-const { getIO } = require('../sockets');
+const { getIO, broadcastLeaderboard, emitToUser, forceLogoutUser } = require('../sockets');
 
 const router = express.Router();
 
 router.use(authenticate);
 router.use(authorizeRole('admin'));
-
-const broadcastLeaderboard = async () => {
-  const io = getIO();
-  const leaderboard = await User.find({ role: 'student' })
-    .sort({ totalScore: -1, spinCount: -1, username: 1 })
-    .select('-password');
-
-  io.emit('leaderboard:update', leaderboard);
-  return leaderboard;
-};
 
 const getLatestSession = async () => {
   return Session.findOne().sort({ createdAt: -1 });
@@ -119,16 +109,11 @@ router.put('/session/:id', async (req, res, next) => {
     }
 
     const io = getIO();
+    // Students gate their SPIN button on session.status === 'active', so simply
+    // broadcasting the new session state instantly locks/unlocks everyone.
+    // Spin balances (spinsRemaining) are preserved across pause/resume.
     io.emit('session:update', session);
     io.emit('wheel:update', session.wheelSegments || []);
-
-    if (status !== 'active') {
-      // Pausing/ending the session instantly locks every student out of spinning.
-      const result = await User.updateMany({ role: 'student' }, { canSpin: false });
-      await broadcastLeaderboard();
-      io.emit('users:permission:update', { canSpin: false, updatedCount: result.modifiedCount });
-      io.emit('spinStatusUpdate', { canSpin: false });
-    }
 
     res.status(200).json({ success: true, session });
   } catch (error) {
@@ -140,7 +125,7 @@ router.get('/users', async (_req, res, next) => {
   try {
     const users = await User.find({ role: 'student' })
       .select('-password')
-      .sort({ totalScore: -1, spinCount: -1, username: 1 });
+      .sort({ totalScore: -1, spinsExecuted: -1, username: 1 });
 
     res.status(200).json({ success: true, users });
   } catch (error) {
@@ -148,46 +133,78 @@ router.get('/users', async (_req, res, next) => {
   }
 });
 
-router.put('/users/toggle-spin', async (req, res, next) => {
+// Push a single student's current spin balance to their private room in
+// real-time, targeting the stable User ID (reaches every tab they have open).
+const emitSpinsUpdate = (user) => {
+  emitToUser(user._id, 'spinsUpdated', {
+    totalScore: user.totalScore,
+    spinsRemaining: user.spinsRemaining,
+    spinsExecuted: user.spinsExecuted,
+  });
+};
+
+// Allocate spins to a student (or all students when userId is omitted).
+// mode: 'add' increments the current balance, 'set' overwrites it.
+router.put('/users/spins', async (req, res, next) => {
   try {
-    const { userId, canSpin } = req.body;
-    const io = getIO();
+    const { userId, amount, mode = 'add' } = req.body;
+
+    const numericAmount = Number(amount);
+    if (!Number.isFinite(numericAmount) || numericAmount < 0) {
+      return res.status(400).json({ success: false, message: 'amount must be a non-negative number' });
+    }
+    if (!['add', 'set'].includes(mode)) {
+      return res.status(400).json({ success: false, message: "mode must be 'add' or 'set'" });
+    }
+
+    const update = mode === 'set'
+      ? { $set: { spinsRemaining: numericAmount } }
+      : { $inc: { spinsRemaining: numericAmount } };
 
     if (userId) {
-      const user = await User.findByIdAndUpdate(
-        userId,
-        { canSpin },
+      const user = await User.findOneAndUpdate(
+        { _id: userId, role: 'student' },
+        update,
         { new: true }
       ).select('-password');
 
       if (!user) {
-        return res.status(404).json({ success: false, message: 'User not found' });
+        return res.status(404).json({ success: false, message: 'Student not found' });
       }
 
-      const payload = { userId: String(user._id), canSpin: user.canSpin };
-      // Targeted real-time toggle to the affected student only.
-      io.to(`user:${user._id}`).emit('user:permission', payload);
-      io.to(`user:${user._id}`).emit('spinStatusUpdate', payload);
-
+      // Real-time: instantly update the affected student and unlock their button.
+      emitSpinsUpdate(user);
       await broadcastLeaderboard();
       return res.status(200).json({ success: true, user });
     }
 
-    const result = await User.updateMany(
-      { role: 'student' },
-      { canSpin }
-    );
-
-    // Global toggle: broadcast to every connected student in real-time.
-    io.emit('users:permission:update', {
-      canSpin,
-      updatedCount: result.modifiedCount,
-    });
-    io.emit('spinStatusUpdate', { canSpin });
+    // Bulk allocation to every student.
+    const result = await User.updateMany({ role: 'student' }, update);
+    const students = await User.find({ role: 'student' }).select('-password');
+    students.forEach((student) => emitSpinsUpdate(student));
 
     await broadcastLeaderboard();
-
     return res.status(200).json({ success: true, updatedCount: result.modifiedCount });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Permanently delete a student account and force their live sessions offline.
+router.delete('/users/:id', async (req, res, next) => {
+  try {
+    const user = await User.findOneAndDelete({ _id: req.params.id, role: 'student' });
+
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'Student not found' });
+    }
+
+    // Real-time: kick every open tab of the deleted user back to the login page.
+    forceLogoutUser(user._id);
+    // Refresh everyone's leaderboard / the admin roster.
+    await broadcastLeaderboard();
+
+    return res.status(200).json({ success: true, id: String(user._id) });
   } catch (error) {
     next(error);
   }

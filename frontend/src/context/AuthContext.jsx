@@ -16,7 +16,12 @@ export function AuthProvider({ children }) {
 
     api
       .get('/student/me')
-      .then((res) => setUser(res.data.user))
+      .then((res) => {
+        const me = res.data.user || {};
+        // /me returns the raw doc (`_id`); normalize to `id` so it matches the
+        // shape returned by login/register across the app.
+        setUser({ ...me, id: me.id || me._id });
+      })
       .catch(() => {
         localStorage.removeItem('token');
       })
