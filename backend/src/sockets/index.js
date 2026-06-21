@@ -1,6 +1,7 @@
 const { Server } = require('socket.io');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
+const { corsOrigin } = require('../config/cors');
 
 let io;
 
@@ -49,7 +50,8 @@ const forceLogoutUser = (userId) => {
 const initSocket = (server) => {
   io = new Server(server, {
     cors: {
-      origin: process.env.CLIENT_URL || '*',
+      // Same policy as Express: localhost + any private LAN origin (see config/cors.js).
+      origin: corsOrigin,
       methods: ['GET', 'POST'],
       credentials: true,
     },

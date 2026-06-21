@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { io } from 'socket.io-client';
+import { SOCKET_URL } from '../services/config';
 
 let segmentUidCounter = 0;
 const nextSegmentUid = () => {
@@ -46,7 +47,7 @@ export default function AdminDashboard() {
   useEffect(() => {
     fetchData();
 
-    const socket = io(import.meta.env.VITE_SOCKET_URL || 'http://localhost:5000', {
+    const socket = io(SOCKET_URL, {
       auth: { token: localStorage.getItem('token') },
     });
     socket.on('connect', () => {

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
+import { SOCKET_URL } from '../services/config';
 import { io } from 'socket.io-client';
 
 const defaultWheelSegments = [
@@ -69,7 +70,7 @@ export default function StudentDashboard() {
     // Authenticate the socket via the JWT in the handshake — the server derives
     // our identity and joins us to our private room. This is stable across tabs
     // and page reloads (no reliance on a client-supplied user id).
-    const socket = io(import.meta.env.VITE_SOCKET_URL || 'http://localhost:5000', {
+    const socket = io(SOCKET_URL, {
       auth: { token: localStorage.getItem('token') },
     });
     socketRef.current = socket;
