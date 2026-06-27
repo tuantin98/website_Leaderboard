@@ -190,6 +190,39 @@ router.put('/users/spins', async (req, res, next) => {
   }
 });
 
+// Manually set a student's total score.
+router.put('/users/:id/update-score', async (req, res, next) => {
+  try {
+    const { totalScore } = req.body;
+    const score = Number(totalScore);
+
+    // Must be a valid non-negative integer.
+    if (!Number.isInteger(score) || score < 0) {
+      return res.status(400).json({ success: false, message: 'totalScore must be a non-negative integer' });
+    }
+
+    const user = await User.findOneAndUpdate(
+      { _id: req.params.id, role: 'student' },
+      { $set: { totalScore: score } },
+      { new: true }
+    ).select('-password');
+
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'Student not found' });
+    }
+
+    // Real-time: push the new score to the student (buffered on their side if
+    // they are mid-spin, so it never interrupts a wheel animation).
+    emitSpinsUpdate(user);
+    // Re-rank everyone's leaderboard instantly.
+    await broadcastLeaderboard();
+
+    return res.status(200).json({ success: true, user });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // Permanently delete a student account and force their live sessions offline.
 router.delete('/users/:id', async (req, res, next) => {
   try {

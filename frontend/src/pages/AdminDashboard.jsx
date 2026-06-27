@@ -28,6 +28,8 @@ export default function AdminDashboard() {
   const [wheelSegments, setWheelSegments] = useState(() => withUids(defaultWheelSegments));
   const [spinInputs, setSpinInputs] = useState({}); // per-user amount being typed
   const [bulkAmount, setBulkAmount] = useState('');
+  const [scoreEditUser, setScoreEditUser] = useState(null); // student whose score is being edited
+  const [scoreInput, setScoreInput] = useState('');
 
   const fetchData = async () => {
     try {
@@ -84,6 +86,32 @@ export default function AdminDashboard() {
       const updated = res.data.user;
       setUsers((prev) => prev.map((user) => (user._id === userId ? { ...user, ...updated } : user)));
       setSpinInputs((prev) => ({ ...prev, [userId]: '' }));
+    } catch (error) {
+      console.error(error);
+    }
+  };
+
+  // Open the score editor modal pre-filled with the student's current score.
+  const openScoreEditor = (user) => {
+    setScoreEditUser(user);
+    setScoreInput(String(user.totalScore ?? 0));
+  };
+
+  const closeScoreEditor = () => {
+    setScoreEditUser(null);
+    setScoreInput('');
+  };
+
+  // Save the manually edited score. Backend validates a non-negative integer.
+  const saveScore = async () => {
+    if (!scoreEditUser) return;
+    const score = Number(scoreInput);
+    if (!Number.isInteger(score) || score < 0) return;
+    try {
+      const res = await api.put(`/admin/users/${scoreEditUser._id}/update-score`, { totalScore: score });
+      const updated = res.data.user;
+      setUsers((prev) => prev.map((u) => (u._id === updated._id ? { ...u, ...updated } : u)));
+      closeScoreEditor();
     } catch (error) {
       console.error(error);
     }
@@ -256,7 +284,13 @@ export default function AdminDashboard() {
                 {users.map((user) => (
                   <tr key={user._id} className="border-t border-slate-800 bg-slate-900/50">
                     <td className="px-4 py-3 font-medium">{user.username}</td>
-                    <td className="px-4 py-3">{user.totalScore}</td>
+                    <td
+                      className="px-4 py-3 cursor-pointer hover:text-cyan-300"
+                      title="Double-click to edit score"
+                      onDoubleClick={() => openScoreEditor(user)}
+                    >
+                      {user.totalScore}
+                    </td>
                     <td className="px-4 py-3">
                       <span className={`font-semibold ${user.spinsRemaining > 0 ? 'text-emerald-300' : 'text-slate-400'}`}>
                         {user.spinsRemaining || 0}
@@ -278,13 +312,22 @@ export default function AdminDashboard() {
                       </div>
                     </td>
                     <td className="px-4 py-3 text-right">
-                      <button
-                        onClick={() => deleteUser(user)}
-                        title="Delete user"
-                        className="inline-flex items-center gap-1 rounded-lg bg-rose-600 px-3 py-1 font-semibold text-white hover:bg-rose-500"
-                      >
-                        🗑 Delete
-                      </button>
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          onClick={() => openScoreEditor(user)}
+                          title="Edit score"
+                          className="inline-flex items-center gap-1 rounded-lg bg-amber-500 px-3 py-1 font-semibold text-slate-950 hover:bg-amber-400"
+                        >
+                          ✎ Edit Score
+                        </button>
+                        <button
+                          onClick={() => deleteUser(user)}
+                          title="Delete user"
+                          className="inline-flex items-center gap-1 rounded-lg bg-rose-600 px-3 py-1 font-semibold text-white hover:bg-rose-500"
+                        >
+                          🗑 Delete
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -293,6 +336,29 @@ export default function AdminDashboard() {
           </div>
         </section>
       </div>
+
+      {scoreEditUser && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4">
+          <div className="w-full max-w-sm rounded-3xl border border-slate-700 bg-slate-900 p-6 shadow-2xl">
+            <p className="text-sm text-slate-400">Edit score</p>
+            <h3 className="mt-1 text-2xl font-semibold text-white">{scoreEditUser.username}</h3>
+            <label className="mt-5 block text-sm text-slate-400">New total score</label>
+            <input
+              type="number"
+              min="0"
+              autoFocus
+              value={scoreInput}
+              onChange={(e) => setScoreInput(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && saveScore()}
+              className="mt-2 w-full rounded-xl bg-slate-950 px-4 py-3 text-white outline-none ring-1 ring-slate-700"
+            />
+            <div className="mt-6 flex justify-end gap-2">
+              <button onClick={closeScoreEditor} className="rounded-2xl bg-slate-700 px-5 py-2 font-semibold text-white">Cancel</button>
+              <button onClick={saveScore} className="rounded-2xl bg-emerald-500 px-5 py-2 font-semibold text-slate-950">Save</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
