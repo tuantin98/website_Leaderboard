@@ -34,12 +34,23 @@ app.get('/api/health', (_req, res) => {
   res.status(200).json({ status: 'ok', message: 'Server is running' });
 });
 
+// Centralized Express error handler — every route's `next(error)` lands here so
+// a thrown error returns a clean 500 instead of hanging the request.
 app.use((err, _req, res, _next) => {
-  console.error(err.stack);
+  console.error('Express error:', err.stack || err.message);
   res.status(err.status || 500).json({
     success: false,
     message: err.message || 'Internal server error',
   });
+});
+
+// Last-resort safety net: log async errors that escaped a try/catch instead of
+// letting them tear down the process (which is what forced server restarts).
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled promise rejection:', reason);
+});
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught exception:', error);
 });
 
 const PORT = process.env.PORT || 5000;
