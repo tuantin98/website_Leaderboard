@@ -3,6 +3,7 @@ import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { io } from 'socket.io-client';
 import { SOCKET_URL } from '../services/config';
+import { defaultWheelSegments } from '../services/wheel';
 
 let segmentUidCounter = 0;
 const nextSegmentUid = () => {
@@ -11,14 +12,6 @@ const nextSegmentUid = () => {
 };
 
 const withUids = (segments) => segments.map((segment) => ({ ...segment, _uid: segment._uid || nextSegmentUid() }));
-
-const defaultWheelSegments = [
-  { text: '+10', value: 10, color: '#06b6d4' },
-  { text: '+20', value: 20, color: '#22c55e' },
-  { text: '+50', value: 50, color: '#f59e0b' },
-  { text: '+100', value: 100, color: '#ef4444' },
-  { text: 'Better luck next time', value: 0, color: '#8b5cf6' },
-];
 
 export default function AdminDashboard() {
   const { logout } = useAuth();

@@ -4,16 +4,100 @@ import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import { SOCKET_URL } from '../services/config';
 import { io } from 'socket.io-client';
-
-const defaultWheelSegments = [
-  { text: '+10', value: 10, color: '#06b6d4' },
-  { text: '+20', value: 20, color: '#22c55e' },
-  { text: '+50', value: 50, color: '#f59e0b' },
-  { text: '+100', value: 100, color: '#ef4444' },
-  { text: 'Better luck next time', value: 0, color: '#8b5cf6' },
-];
+import { defaultWheelSegments } from '../services/wheel';
 
 const normalizeDegrees = (value) => ((value % 360) + 360) % 360;
+
+// Pick black or white text depending on how light the slice colour is (WCAG-ish
+// relative luminance) so labels always stay high-contrast.
+const getContrastColor = (hexColor) => {
+  const hex = String(hexColor || '').replace('#', '');
+  const full = hex.length === 3 ? hex.split('').map((c) => c + c).join('') : hex;
+  const r = parseInt(full.slice(0, 2), 16) / 255;
+  const g = parseInt(full.slice(2, 4), 16) / 255;
+  const b = parseInt(full.slice(4, 6), 16) / 255;
+  if ([r, g, b].some(Number.isNaN)) return '#ffffff';
+  const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  return luminance > 0.6 ? '#0f172a' : '#ffffff';
+};
+
+// Shrink the font until the label fits the space available along the slice's
+// radial axis — guarantees long labels like "Not lucky" never bleed past borders.
+const fitFontSize = (ctx, text, maxFontPx, minFontPx, maxWidthPx) => {
+  let fontPx = maxFontPx;
+  // eslint-disable-next-line no-constant-condition
+  while (fontPx > minFontPx) {
+    ctx.font = `700 ${fontPx}px Inter, sans-serif`;
+    if (ctx.measureText(text).width <= maxWidthPx) break;
+    fontPx -= 1;
+  }
+  return fontPx;
+};
+
+// Standalone wheel renderer. Draws N equal slices and centers each label
+// radially within its own sector using translate + rotate transforms.
+function drawWheel(ctx, segments, rotationDeg, size) {
+  const center = size / 2;
+  const outerRadius = center - 18;
+  const count = Math.max(segments.length, 1);
+  const sector = (Math.PI * 2) / count;
+  // Place text in the widest part of the slice (~65% of the outer radius).
+  const textRadius = outerRadius * 0.65;
+  // Tangential room at that radius caps the font height; radial room caps width.
+  const arcWidth = sector * textRadius;
+  const maxFontPx = Math.min(16, Math.round(arcWidth * 0.62));
+  const maxTextWidth = outerRadius * 0.5;
+
+  ctx.clearRect(0, 0, size, size);
+
+  segments.forEach((segment, index) => {
+    const startAngle = -Math.PI / 2 + index * sector + (rotationDeg * Math.PI) / 180;
+    const endAngle = startAngle + sector;
+    const midAngle = (startAngle + endAngle) / 2;
+
+    // Slice wedge.
+    ctx.beginPath();
+    ctx.moveTo(center, center);
+    ctx.arc(center, center, outerRadius, startAngle, endAngle);
+    ctx.closePath();
+    ctx.fillStyle = segment.color;
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = 'rgba(15, 23, 42, 0.55)';
+    ctx.stroke();
+
+    // Centered radial label.
+    ctx.save();
+    ctx.translate(center, center);
+    ctx.rotate(midAngle);
+    // Flip labels on the left hemisphere so they stay upright/readable.
+    const normalized = normalizeDegrees((midAngle * 180) / Math.PI);
+    const flipped = normalized > 90 && normalized < 270;
+    if (flipped) ctx.rotate(Math.PI);
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = getContrastColor(segment.color);
+    fitFontSize(ctx, segment.text, maxFontPx, 9, maxTextWidth);
+    ctx.fillText(segment.text, flipped ? -textRadius : textRadius, 0);
+    ctx.restore();
+  });
+
+  // Hub.
+  ctx.beginPath();
+  ctx.arc(center, center, 8, 0, Math.PI * 2);
+  ctx.fillStyle = '#0f172a';
+  ctx.fill();
+
+  // Single right-side pointer (3 o'clock).
+  ctx.beginPath();
+  ctx.moveTo(center + outerRadius + 10, center);
+  ctx.lineTo(center + outerRadius - 18, center - 22);
+  ctx.lineTo(center + outerRadius - 18, center + 22);
+  ctx.closePath();
+  ctx.fillStyle = '#fbbf24';
+  ctx.fill();
+}
 
 export default function StudentDashboard() {
   const { user, logout } = useAuth();
@@ -156,48 +240,8 @@ export default function StudentDashboard() {
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-
     const ctx = canvas.getContext('2d');
-    const size = canvas.width;
-    const center = size / 2;
-    const radius = center - 18;
-    const sector = (Math.PI * 2) / Math.max(wheelSegments.length, 1);
-
-    ctx.clearRect(0, 0, size, size);
-
-    wheelSegments.forEach((segment, index) => {
-      const startAngle = -Math.PI / 2 + index * sector + (rotation * Math.PI) / 180;
-      const endAngle = startAngle + sector;
-
-      ctx.beginPath();
-      ctx.moveTo(center, center);
-      ctx.arc(center, center, radius, startAngle, endAngle);
-      ctx.closePath();
-      ctx.fillStyle = segment.color;
-      ctx.fill();
-
-      ctx.save();
-      ctx.translate(center, center);
-      ctx.rotate((startAngle + endAngle) / 2);
-      ctx.textAlign = 'center';
-      ctx.fillStyle = 'white';
-      ctx.font = '600 16px Inter, sans-serif';
-      ctx.fillText(segment.text, radius * 0.62, 6);
-      ctx.restore();
-    });
-
-    ctx.beginPath();
-    ctx.arc(center, center, 8, 0, Math.PI * 2);
-    ctx.fillStyle = '#0f172a';
-    ctx.fill();
-
-    ctx.beginPath();
-    ctx.moveTo(center + radius + 10, center);
-    ctx.lineTo(center + radius - 18, center - 22);
-    ctx.lineTo(center + radius - 18, center + 22);
-    ctx.closePath();
-    ctx.fillStyle = '#fbbf24';
-    ctx.fill();
+    drawWheel(ctx, wheelSegments, rotation, canvas.width);
   }, [rotation, wheelSegments]);
 
   // Quota-gated: the SPIN button is enabled only while the student has spins
@@ -243,11 +287,22 @@ export default function StudentDashboard() {
       setResult(null);
       const res = await api.post('/student/spin');
       const spinResult = res.data.result;
-      const index = wheelSegments.findIndex((segment) => segment.text === spinResult.text && segment.value === spinResult.value);
+
+      // Prefer the backend-chosen sector index (exact, even with duplicate labels);
+      // fall back to a label match only if an older server omits it.
+      const index = Number.isInteger(spinResult.index)
+        ? spinResult.index
+        : wheelSegments.findIndex((s) => s.text === spinResult.text && s.value === spinResult.value);
+
+      // --- Right-pointer alignment math (pointer fixed at 3 o'clock = canvas 0°) ---
+      // Each sector spans `sectorAngle`. Sectors are drawn starting at -90° (top),
+      // so sector i's center sits at: -90 + (i + 0.5)*sectorAngle + rotation.
+      // To land that center on the right pointer (0°): rotation = 90 - (i+0.5)*sectorAngle.
       const sectorAngle = 360 / Math.max(wheelSegments.length, 1);
       const desiredFinalRotation = 90 - (index + 0.5) * sectorAngle;
       const currentNormalized = normalizeDegrees(rotationRef.current);
       const deltaToTarget = (desiredFinalRotation - currentNormalized + 360) % 360;
+      // Add 5 full turns for the spin effect, then settle exactly on the target.
       const targetDegrees = rotationRef.current + 360 * 5 + deltaToTarget;
 
       // Delayed sync: only commit score/quota once the wheel has fully stopped.
