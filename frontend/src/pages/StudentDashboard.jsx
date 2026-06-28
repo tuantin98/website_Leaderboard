@@ -74,31 +74,31 @@ export default function StudentDashboard() {
       auth: { token: localStorage.getItem('token') },
     });
     socketRef.current = socket;
-    socket.on('connect', () => {
+
+    // Named handlers so the cleanup can remove exactly these — guarantees we
+    // never stack duplicate listeners across re-renders or mobile refreshes.
+    const handleConnect = () => {
       // Belt-and-suspenders: re-assert the room (handshake auth already joined it).
       socket.emit('join', { userId: user?.id, role: user?.role });
-    });
-
-    socket.on('leaderboardUpdated', (data) => {
+    };
+    const handleLeaderboard = (data) => {
       // Delay leaderboard refresh until our own wheel has stopped (read via ref).
       if (spinningRef.current) {
         pendingLeaderboardRef.current = data;
       } else {
         setLeaderboard(data);
       }
-    });
-    socket.on('session:update', (data) => {
+    };
+    const handleSession = (data) => {
       setSession(data);
       setWheelSegments(data?.wheelSegments?.length ? data.wheelSegments : defaultWheelSegments);
-    });
-    socket.on('wheel:update', (data) => {
+    };
+    const handleWheel = (data) => {
       setWheelSegments(data?.length ? data : defaultWheelSegments);
-    });
-
-    // Real-time quota sync: admin allocations and the student's own spins both
-    // push the updated balance here. While THIS tab's wheel is mid-spin we buffer
-    // the update so the visible score/quota only changes once the wheel stops.
-    socket.on('spinsUpdated', (data) => {
+    };
+    // Real-time quota/score sync. While THIS tab's wheel is mid-spin we buffer the
+    // update so the visible score/quota only changes once the wheel stops.
+    const handleSpins = (data) => {
       if (spinningRef.current) {
         pendingStatsRef.current = data;
         return;
@@ -108,16 +108,29 @@ export default function StudentDashboard() {
         spinsRemaining: data.spinsRemaining ?? prev.spinsRemaining,
         spinsExecuted: data.spinsExecuted ?? prev.spinsExecuted,
       }));
-    });
-
+    };
     // Admin deleted this account: clear auth + state and bounce to login.
-    socket.on('forcedLogout', (data) => {
+    const handleForcedLogout = (data) => {
       const message = data?.message || 'Your account has been removed by the Admin.';
       logout();
       navigate('/login', { replace: true, state: { message } });
-    });
+    };
+
+    socket.on('connect', handleConnect);
+    socket.on('leaderboardUpdated', handleLeaderboard);
+    socket.on('session:update', handleSession);
+    socket.on('wheel:update', handleWheel);
+    socket.on('spinsUpdated', handleSpins);
+    socket.on('forcedLogout', handleForcedLogout);
 
     return () => {
+      // Remove every listener, then tear down the connection.
+      socket.off('connect', handleConnect);
+      socket.off('leaderboardUpdated', handleLeaderboard);
+      socket.off('session:update', handleSession);
+      socket.off('wheel:update', handleWheel);
+      socket.off('spinsUpdated', handleSpins);
+      socket.off('forcedLogout', handleForcedLogout);
       socketRef.current = null;
       socket.disconnect();
     };

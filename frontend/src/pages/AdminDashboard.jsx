@@ -30,6 +30,10 @@ export default function AdminDashboard() {
   const [bulkAmount, setBulkAmount] = useState('');
   const [scoreEditUser, setScoreEditUser] = useState(null); // student whose score is being edited
   const [scoreInput, setScoreInput] = useState('');
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const emptyCreateForm = { username: '', password: '', totalScore: '0', spinsRemaining: '0' };
+  const [createForm, setCreateForm] = useState(emptyCreateForm);
+  const [createError, setCreateError] = useState('');
 
   const fetchData = async () => {
     try {
@@ -52,16 +56,26 @@ export default function AdminDashboard() {
     const socket = io(SOCKET_URL, {
       auth: { token: localStorage.getItem('token') },
     });
-    socket.on('connect', () => {
-      socket.emit('join', { role: 'admin' });
-    });
 
-    socket.on('session:update', (data) => setSession(data));
-    socket.on('wheel:update', (data) => setWheelSegments(withUids(data?.length ? data : defaultWheelSegments)));
+    // Named handlers so cleanup removes exactly these (no duplicate listeners).
+    const handleConnect = () => socket.emit('join', { role: 'admin' });
+    const handleSession = (data) => setSession(data);
+    const handleWheel = (data) => setWheelSegments(withUids(data?.length ? data : defaultWheelSegments));
     // Roster live-refresh (includes each student's spinsRemaining/spinsExecuted).
-    socket.on('leaderboardUpdated', (data) => setUsers(data));
+    const handleLeaderboard = (data) => setUsers(data);
 
-    return () => socket.disconnect();
+    socket.on('connect', handleConnect);
+    socket.on('session:update', handleSession);
+    socket.on('wheel:update', handleWheel);
+    socket.on('leaderboardUpdated', handleLeaderboard);
+
+    return () => {
+      socket.off('connect', handleConnect);
+      socket.off('session:update', handleSession);
+      socket.off('wheel:update', handleWheel);
+      socket.off('leaderboardUpdated', handleLeaderboard);
+      socket.disconnect();
+    };
   }, []);
 
   const createSession = async () => {
@@ -88,6 +102,37 @@ export default function AdminDashboard() {
       setSpinInputs((prev) => ({ ...prev, [userId]: '' }));
     } catch (error) {
       console.error(error);
+    }
+  };
+
+  const openCreateModal = () => {
+    setCreateForm(emptyCreateForm);
+    setCreateError('');
+    setShowCreateModal(true);
+  };
+
+  // Admin creates a new student account. Backend hashes the password,
+  // forces role='student', and broadcasts the updated roster.
+  const createStudent = async () => {
+    const { username, password, totalScore, spinsRemaining } = createForm;
+    if (!username.trim() || !password) {
+      setCreateError('Username and password are required');
+      return;
+    }
+    try {
+      const res = await api.post('/admin/users/create', {
+        username: username.trim(),
+        password,
+        totalScore: Number(totalScore) || 0,
+        spinsRemaining: Number(spinsRemaining) || 0,
+      });
+      // Socket broadcast will also refresh the roster; merge in case this tab is first.
+      setUsers((prev) =>
+        prev.some((u) => u._id === res.data.user._id) ? prev : [...prev, res.data.user]
+      );
+      setShowCreateModal(false);
+    } catch (error) {
+      setCreateError(error.response?.data?.message || 'Failed to create student');
     }
   };
 
@@ -253,7 +298,10 @@ export default function AdminDashboard() {
 
         <section className="mt-6 rounded-3xl border border-slate-800 bg-slate-900 p-6">
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-            <h2 className="text-2xl font-semibold">Student roster</h2>
+            <div className="flex items-center gap-3">
+              <h2 className="text-2xl font-semibold">Student roster</h2>
+              <button onClick={openCreateModal} className="rounded-2xl bg-emerald-500 px-4 py-2 font-semibold text-slate-950 hover:bg-emerald-400">+ Create New Student</button>
+            </div>
             <div className="flex items-center gap-2">
               <input
                 type="number"
@@ -336,6 +384,61 @@ export default function AdminDashboard() {
           </div>
         </section>
       </div>
+
+      {showCreateModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4">
+          <div className="w-full max-w-sm rounded-3xl border border-slate-700 bg-slate-900 p-6 shadow-2xl">
+            <h3 className="text-2xl font-semibold text-white">Create New Student</h3>
+            <div className="mt-5 space-y-3">
+              <div>
+                <label className="block text-sm text-slate-400">Username</label>
+                <input
+                  autoFocus
+                  value={createForm.username}
+                  onChange={(e) => setCreateForm((f) => ({ ...f, username: e.target.value }))}
+                  className="mt-1 w-full rounded-xl bg-slate-950 px-4 py-2.5 text-white outline-none ring-1 ring-slate-700"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-slate-400">Password</label>
+                <input
+                  type="password"
+                  value={createForm.password}
+                  onChange={(e) => setCreateForm((f) => ({ ...f, password: e.target.value }))}
+                  className="mt-1 w-full rounded-xl bg-slate-950 px-4 py-2.5 text-white outline-none ring-1 ring-slate-700"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm text-slate-400">Initial Score</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={createForm.totalScore}
+                    onChange={(e) => setCreateForm((f) => ({ ...f, totalScore: e.target.value }))}
+                    className="mt-1 w-full rounded-xl bg-slate-950 px-4 py-2.5 text-white outline-none ring-1 ring-slate-700"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm text-slate-400">Spins Remaining</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={createForm.spinsRemaining}
+                    onChange={(e) => setCreateForm((f) => ({ ...f, spinsRemaining: e.target.value }))}
+                    className="mt-1 w-full rounded-xl bg-slate-950 px-4 py-2.5 text-white outline-none ring-1 ring-slate-700"
+                  />
+                </div>
+              </div>
+              {createError && <p className="text-sm text-rose-400">{createError}</p>}
+            </div>
+            <div className="mt-6 flex justify-end gap-2">
+              <button onClick={() => setShowCreateModal(false)} className="rounded-2xl bg-slate-700 px-5 py-2 font-semibold text-white">Cancel</button>
+              <button onClick={createStudent} className="rounded-2xl bg-emerald-500 px-5 py-2 font-semibold text-slate-950">Submit</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {scoreEditUser && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4">

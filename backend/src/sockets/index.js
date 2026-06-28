@@ -55,6 +55,10 @@ const initSocket = (server) => {
       methods: ['GET', 'POST'],
       credentials: true,
     },
+    // Reap dead/zombie connections (e.g. a phone that slept or hard-refreshed)
+    // instead of letting them accumulate and leak memory over time.
+    pingInterval: 25000,
+    pingTimeout: 20000,
   });
 
   // Authenticate the socket from the JWT passed in the handshake. We derive the
@@ -95,7 +99,20 @@ const initSocket = (server) => {
       broadcastLeaderboard().catch((error) => console.error('Leaderboard broadcast failed:', error));
     });
 
-    socket.on('disconnect', () => {});
+    // Log transport errors so a flaky mobile connection can't silently wedge.
+    socket.on('error', (error) => {
+      console.error(`Socket ${socket.id} error:`, error.message);
+    });
+
+    // On disconnect, leave rooms and strip every listener bound to this socket so
+    // nothing referencing it is retained after the connection is gone.
+    socket.on('disconnect', (reason) => {
+      socket.rooms.forEach((room) => socket.leave(room));
+      socket.removeAllListeners();
+      if (reason === 'transport error' || reason === 'ping timeout') {
+        console.warn(`Socket ${socket.id} dropped: ${reason}`);
+      }
+    });
   });
 
   return io;

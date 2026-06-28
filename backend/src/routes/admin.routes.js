@@ -1,4 +1,5 @@
 const express = require('express');
+const bcrypt = require('bcryptjs');
 const { authenticate, authorizeRole } = require('../middleware/auth');
 const Session = require('../models/Session');
 const User = require('../models/User');
@@ -128,6 +129,64 @@ router.get('/users', async (_req, res, next) => {
       .sort({ totalScore: -1, spinsExecuted: -1, username: 1 });
 
     res.status(200).json({ success: true, users });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Coerce a possibly-string body value into a non-negative integer, or null if invalid.
+const toNonNegativeInt = (value, fallback) => {
+  if (value === undefined || value === null || value === '') return fallback;
+  const n = Number(value);
+  return Number.isInteger(n) && n >= 0 ? n : null;
+};
+
+// Admin manually creates a student account (username, password, starting score
+// and spin balance). Password is hashed; role is forced to 'student'.
+router.post('/users/create', async (req, res, next) => {
+  try {
+    const { username, password } = req.body;
+
+    // Strict input validation (prevents injection / malformed docs / crashes).
+    if (typeof username !== 'string' || typeof password !== 'string') {
+      return res.status(400).json({ success: false, message: 'Username and password must be strings' });
+    }
+    const trimmedUsername = username.trim();
+    if (trimmedUsername.length < 3 || trimmedUsername.length > 40) {
+      return res.status(400).json({ success: false, message: 'Username must be 3-40 characters' });
+    }
+    if (password.length < 4) {
+      return res.status(400).json({ success: false, message: 'Password must be at least 4 characters' });
+    }
+
+    const totalScore = toNonNegativeInt(req.body.totalScore, 0);
+    const spinsRemaining = toNonNegativeInt(req.body.spinsRemaining, 0);
+    if (totalScore === null || spinsRemaining === null) {
+      return res.status(400).json({ success: false, message: 'totalScore and spinsRemaining must be non-negative integers' });
+    }
+
+    // Duplicate check (case-insensitive exact match).
+    const existing = await User.findOne({ username: trimmedUsername });
+    if (existing) {
+      return res.status(409).json({ success: false, message: 'Username already exists' });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const created = await User.create({
+      username: trimmedUsername,
+      password: hashedPassword,
+      role: 'student',
+      totalScore,
+      spinsRemaining,
+      spinsExecuted: 0,
+    });
+
+    const user = await User.findById(created._id).select('-password');
+
+    // Real-time: refresh every admin roster (and leaderboard) with the new student.
+    await broadcastLeaderboard();
+
+    return res.status(201).json({ success: true, user });
   } catch (error) {
     next(error);
   }
