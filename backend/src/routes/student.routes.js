@@ -3,37 +3,36 @@ const { authenticate } = require('../middleware/auth');
 const User = require('../models/User');
 const Session = require('../models/Session');
 const { emitToUser, scheduleLeaderboardBroadcast } = require('../sockets');
+const { DEFAULT_WHEEL_SEGMENTS } = require('../config/wheel');
 
 const router = express.Router();
 
 router.use(authenticate);
 
+// Pick a sector and return its INDEX in the original array. With 10 equal-weight
+// sectors each has a 10% chance. Returning the index (not just the label) lets the
+// frontend align the exact sector under the pointer even when labels repeat.
 const getWeightedResult = (segments) => {
-  const validSegments = segments.filter((segment) => segment && typeof segment.value === 'number');
-  if (!validSegments.length) {
+  const weights = segments.map((segment) =>
+    segment && typeof segment.value === 'number' ? Math.max(1, segment.weight || 1) : 0
+  );
+  const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+  if (totalWeight <= 0) {
     return null;
   }
 
-  const totalWeight = validSegments.reduce((sum, segment) => sum + Math.max(1, segment.weight || 1), 0);
-  const random = Math.random() * totalWeight;
-
-  let running = 0;
-  for (const segment of validSegments) {
-    running += Math.max(1, segment.weight || 1);
-    if (random < running) {
-      return {
-        text: segment.text,
-        value: segment.value,
-        color: segment.color,
-      };
+  let random = Math.random() * totalWeight;
+  for (let i = 0; i < segments.length; i += 1) {
+    random -= weights[i];
+    if (random < 0) {
+      return { text: segments[i].text, value: segments[i].value, color: segments[i].color, index: i };
     }
   }
 
-  return {
-    text: validSegments[validSegments.length - 1].text,
-    value: validSegments[validSegments.length - 1].value,
-    color: validSegments[validSegments.length - 1].color,
-  };
+  // Floating-point safety net: return the last valid sector.
+  const lastValid = weights.reduce((acc, weight, i) => (weight > 0 ? i : acc), -1);
+  const segment = segments[lastValid];
+  return { text: segment.text, value: segment.value, color: segment.color, index: lastValid };
 };
 
 router.get('/me', async (req, res, next) => {
@@ -84,14 +83,9 @@ router.post('/spin', async (req, res, next) => {
 
     const wheelSegments = session.wheelSegments?.length
       ? session.wheelSegments
-      : [
-          { text: '+10', value: 10, color: '#06b6d4' },
-          { text: '+20', value: 20, color: '#22c55e' },
-          { text: '+50', value: 50, color: '#f59e0b' },
-          { text: '+100', value: 100, color: '#ef4444' },
-          { text: 'Better luck next time', value: 0, color: '#8b5cf6' },
-        ];
+      : DEFAULT_WHEEL_SEGMENTS;
 
+    // result includes `index` so the frontend lands on the exact chosen sector.
     const result = getWeightedResult(wheelSegments);
     if (!result) {
       return res.status(400).json({ success: false, message: 'No wheel segments configured' });
