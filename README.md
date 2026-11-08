@@ -97,6 +97,22 @@ reachable, it automatically falls back to an in-memory MongoDB
 - `VITE_API_URL` — backend API base URL (e.g. `http://localhost:5000/api`)
 - `VITE_SOCKET_URL` — Socket.io server URL (e.g. `http://localhost:5000`)
 
+## Deploy to Render
+
+`render.yaml` defines a Render Blueprint with one free web service: it builds the
+frontend, and the backend serves both the API/Socket.io and the built UI from the
+same origin (no CORS or API URL setup needed).
+
+1. In Render, choose **New → Blueprint** and connect this GitHub repo.
+2. Enter a value for `ADMIN_REGISTRATION_SECRET` when prompted (`JWT_SECRET` is
+   generated automatically).
+3. Deploy. The app is served at `https://<service-name>.onrender.com`.
+
+By default the service uses an in-memory MongoDB, so all data is lost whenever the
+service restarts or wakes from sleep (free services sleep after ~15 minutes idle).
+To keep data, set `MONGODB_URI` (e.g. a MongoDB Atlas connection string) in the
+service's environment settings.
+
 ## Features
 
 - **Spin Quota Management** — each student has a `spinsRemaining` balance and a

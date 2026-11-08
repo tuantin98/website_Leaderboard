@@ -1,5 +1,7 @@
 const express = require('express');
+const fs = require('fs');
 const http = require('http');
+const path = require('path');
 const cors = require('cors');
 const morgan = require('morgan');
 const dotenv = require('dotenv');
@@ -33,6 +35,17 @@ app.use('/api/student', studentRoutes);
 app.get('/api/health', (_req, res) => {
   res.status(200).json({ status: 'ok', message: 'Server is running' });
 });
+
+// Serve the built React app (frontend/dist) when it exists, so a single service
+// (e.g. on Render) hosts both the API and the UI on one origin. Unknown non-API
+// paths fall back to index.html for client-side routing.
+const clientDist = path.resolve(__dirname, '../../frontend/dist');
+if (fs.existsSync(path.join(clientDist, 'index.html'))) {
+  app.use(express.static(clientDist));
+  app.get(/^\/(?!api(\/|$)|socket\.io(\/|$)).*/, (_req, res) => {
+    res.sendFile(path.join(clientDist, 'index.html'));
+  });
+}
 
 // Centralized Express error handler — every route's `next(error)` lands here so
 // a thrown error returns a clean 500 instead of hanging the request.
