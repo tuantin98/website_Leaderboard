@@ -2,9 +2,14 @@
 // http://192.168.1.50:3000, window.location.hostname is "192.168.1.50", so the
 // API/socket calls automatically target http://192.168.1.50:5000 — no hardcoded
 // localhost. Override with VITE_API_URL / VITE_SOCKET_URL when needed.
+//
+// In a production build (e.g. on Render) the backend serves this app itself, so
+// the API lives on the same origin as the page.
 const hostname = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
 const BACKEND_PORT = import.meta.env.VITE_BACKEND_PORT || '5000';
-const backendOrigin = `http://${hostname}:${BACKEND_PORT}`;
+const backendOrigin = import.meta.env.PROD && typeof window !== 'undefined'
+  ? window.location.origin
+  : `http://${hostname}:${BACKEND_PORT}`;
 
 export const API_URL = import.meta.env.VITE_API_URL || `${backendOrigin}/api`;
 export const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || backendOrigin;

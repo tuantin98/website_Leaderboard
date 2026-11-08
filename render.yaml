@@ -1,0 +1,31 @@
+# Render Blueprint: one free web service that runs the backend (API + Socket.io)
+# and serves the built React frontend from the same origin.
+#
+# MONGODB_URI is intentionally unset, so the backend starts an in-memory MongoDB.
+# Data is lost whenever the service restarts or wakes from sleep (demo only).
+# To keep data, add MONGODB_URI (e.g. a MongoDB Atlas connection string) in the
+# Render dashboard.
+services:
+  - type: web
+    name: website-leaderboard
+    runtime: node
+    plan: free
+    # The last build step pre-downloads the MongoDB binary into MONGOMS_DOWNLOAD_DIR
+    # (inside the project dir, which Render keeps from build to runtime) so a cold
+    # start doesn't have to fetch it again.
+    buildCommand: >-
+      npm --prefix frontend ci --include=dev &&
+      npm --prefix frontend run build &&
+      cd backend && npm ci &&
+      node -e "require('mongodb-memory-server').MongoBinary.getPath().then((p) => console.log('MongoDB binary:', p))"
+    startCommand: cd backend && node src/server.js
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "24"
+      - key: MONGOMS_DOWNLOAD_DIR
+        value: /opt/render/project/src/backend/.mongodb-binaries
+      - key: JWT_SECRET
+        generateValue: true
+      - key: ADMIN_REGISTRATION_SECRET
+        sync: false

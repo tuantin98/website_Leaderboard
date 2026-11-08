@@ -3,11 +3,14 @@
 // Problem this solves: a fixed CLIENT_URL (e.g. http://localhost:3000) makes the
 // server reject requests coming from the laptop's LAN IP (http://192.168.0.113:3000),
 // so phones/other devices can't log in. Here we allow localhost AND any private
-// LAN address, plus any explicit origins listed in CLIENT_URL (comma-separated).
+// LAN address, plus any explicit origins listed in CLIENT_URL (comma-separated)
+// and the service's own public URL on Render (RENDER_EXTERNAL_URL, set by Render).
 
 // Read lazily so values from dotenv (loaded after requires) are picked up.
 const getExtraAllowed = () =>
-  (process.env.CLIENT_URL || '')
+  [process.env.CLIENT_URL, process.env.RENDER_EXTERNAL_URL]
+    .filter(Boolean)
+    .join(',')
     .split(',')
     .map((value) => value.trim())
     .filter(Boolean);
